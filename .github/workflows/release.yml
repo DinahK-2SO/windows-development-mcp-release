@@ -1,110 +1,151 @@
-# Create a workflow that checks out the private package repository, packs it, and uploads
-# the resulting .tgz to a release in THIS (public) repository. The workflow expects a
+# Create a workflow that checks out the private package repository, builds self-contained Windows binaries,
+# and uploads the resulting artifacts to a release in THIS (public) repository. The workflow expects a
 # Personal Access Token (PAT) stored in the repository secret `PRIVATE_REPO_PAT` with
 # access to the private repo (repo scope).
-name: Release private package to Public Releases
-
-on:
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to create (optional). If empty, uses package.json version (prefixed with v).'
-        required: false
-        default: ''
+name: Release MCP Server (public release of private project)
 
 permissions:
   contents: write
 
-jobs:
-  release:
-    name: Build and publish private package as public release
-    runs-on: ubuntu-latest
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version tag (e.g., v1.0.0)'
+        required: true
+      prerelease:
+        description: 'Is this a pre-release? (true/false)'
+        required: false
+        default: 'false'
+  push:
+    tags:
+      - 'v*.*.*'
 
+jobs:
+  build-and-publish:
+    name: Build self-contained binaries
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        # win-arm removed: .NET 8 console self-contained apphost not available (NETSDK1084)
+        rid: [win-x64, win-x86, win-arm64]
     env:
-      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+      PROJECT_PATH: private/windows-development-mcp.csproj
+      CONFIGURATION: Release
 
     steps:
-    # NOTE: don't set secrets as job-level env in some linting configurations.
-    # Put the secret into the specific step's env instead to avoid "invalid context" warnings.
+      - name: Checkout this repository
+        uses: actions/checkout@v4
 
-    - name: Checkout this repository
-      uses: actions/checkout@v4
+      - name: Validate PRIVATE_REPO_PAT
+        run: |
+          if [ -z "${{ secrets.PRIVATE_REPO_PAT }}" ]; then
+            echo "ERROR: PRIVATE_REPO_PAT secret is not set in this repository. Add it in Settings → Secrets." >&2
+            exit 1
+          fi
 
-    - name: Validate PRIVATE_REPO_PAT and access to private repo
-      run: |
-        if [ -z "${{ secrets.PRIVATE_REPO_PAT }}" ]; then
-          echo "ERROR: PRIVATE_REPO_PAT secret is not set in this repository. Add it in Settings → Secrets." >&2
-          exit 1
-        fi
+          # Verify the token can access the private repository via the GitHub API
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${{ secrets.PRIVATE_REPO_PAT }}" https://api.github.com/repos/DinahK-2SO/windows-development-mcp)
 
-        # Check the token can access the private repository via the GitHub API.
-        HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
-          -H "Authorization: Bearer ${{ secrets.PRIVATE_REPO_PAT }}" \
-          https://api.github.com/repos/DinahK-2SO/windows-development-mcp)
+          if [ "$HTTP_STATUS" != "200" ]; then
+            echo "ERROR: PRIVATE_REPO_PAT cannot access repository. HTTP status: $HTTP_STATUS" >&2
+            echo "Possible causes: token has insufficient scopes, token is expired, token not authorized for SSO, or wrong secret name." >&2
+            exit 1
+          fi
 
-        if [ "$HTTP_STATUS" != "200" ]; then
-          echo "ERROR: Token cannot access repository. HTTP status: $HTTP_STATUS" >&2
-          echo "Possible causes: token has insufficient scopes, token is expired, token not authorized for SSO, or wrong secret name." >&2
-          echo "Ensure the PAT has read access to the repository (Contents: Read) or repo scope and, if your organization requires SSO, authorize the token for organization access." >&2
-          exit 1
-        fi
+      - name: Checkout private repository
+        uses: actions/checkout@v4
+        with:
+          repository: DinahK-2SO/windows-development-mcp
+          token: ${{ secrets.PRIVATE_REPO_PAT }}
+          path: private
+          fetch-depth: 1
 
-    - name: Checkout private repository
-      uses: actions/checkout@v4
-      with:
-        repository: DinahK-2SO/windows-development-mcp
-        token: ${{ secrets.PRIVATE_REPO_PAT }}
-        path: private
-        fetch-depth: 1
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
 
-    - name: Setup Node.js
-      uses: actions/setup-node@v4
-      with:
-        node-version: '20'
+      - name: Restore
+        run: dotnet restore $env:PROJECT_PATH
 
-    - name: Install dependencies (private repository)
-      working-directory: private
-      run: npm ci --prefer-offline
+      - name: Publish (${{ matrix.rid }})
+        shell: pwsh
+        run: |
+          dotnet publish $env:PROJECT_PATH -c $env:CONFIGURATION -r ${{ matrix.rid }} --self-contained true /p:PublishSingleFile=true /p:PublishTrimmed=false /p:PublishReadyToRun=true /p:IncludeNativeLibrariesForSelfExtract=true -o "publish/${{ matrix.rid }}"
 
-    - name: Pack private package
-      id: pack
-      working-directory: private
-      run: |
-        # npm pack writes a tarball named like "<name-without-scope>-<version>.tgz"
-        npm pack
-        # capture the produced filename so later steps can find it
-        TARFILE=$(ls -1t *.tgz | head -n1)
-        echo "tarball=${TARFILE}" >> $GITHUB_OUTPUT
-        echo "tarball_path=private/${TARFILE}" >> $GITHUB_OUTPUT
-        echo "Produced tarball: ${TARFILE}"
+      - name: Generate checksum
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path publish/${{ matrix.rid }} -Filter *.exe | ForEach-Object {
+            $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+            "$hash  $($_.Name)" | Out-File -FilePath publish/${{ matrix.rid }}/SHA256SUMS.txt -Encoding utf8 -Append
+          }
 
-    - name: Determine release tag
-      id: get_tag
-      run: |
-        if [ -n "${{ github.event.inputs.tag }}" ]; then
-          echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
-        else
-          VERSION=$(node -p "require('./private/package.json').version")
-          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
-        fi
+      - name: Upload artifact ${{ matrix.rid }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-development-mcp-${{ matrix.rid }}
+          path: publish/${{ matrix.rid }}/*
 
-    - name: Create release in this repository
-      id: create_release
-      uses: actions/create-release@v1
-      with:
-        tag_name: ${{ steps.get_tag.outputs.tag }}
-        release_name: ${{ steps.get_tag.outputs.tag }}
-        body: |
-          Release of the private package from `DinahK-2SO/windows-development-mcp`.
-          Package: ${{ steps.pack.outputs.tarball }}
-        draft: false
-        prerelease: false
+  create-release:
+    name: Create GitHub Release
+    needs: build-and-publish
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.version != ''
 
-    - name: Upload package tarball to release
-      uses: actions/upload-release-asset@v1
-      with:
-        upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: ${{ steps.pack.outputs.tarball_path }}
-        asset_name: ${{ steps.pack.outputs.tarball }}
-        asset_content_type: application/gzip
+    steps:
+      - name: Determine version
+        id: vars
+        run: |
+          if [ "${{ github.event.inputs.version }}" != "" ]; then
+            echo "version=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+          echo "prerelease=${{ github.event.inputs.prerelease }}" >> $GITHUB_OUTPUT
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Package archives
+        run: |
+          cd dist
+          for d in */ ; do
+            name="${d%/}"
+            zip -r "${name}.zip" "${name}"/*
+          done
+          ls -R
+
+      - name: Prepare checksum assets
+        run: |
+          cd dist
+          # Copy each inner SHA256SUMS.txt to a uniquely named file at root
+          for d in */ ; do
+            name="${d%/}"
+            if [ -f "$d/SHA256SUMS.txt" ]; then
+              cp "$d/SHA256SUMS.txt" "${name}-SHA256SUMS.txt"
+            fi
+          done
+          # Aggregate all into one combined file
+          cat *-SHA256SUMS.txt > windows-development-mcp-all-SHA256SUMS.txt || true
+          echo "Generated checksum files:"
+          ls -1 *SHA256SUMS*.txt || true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.version }}
+          name: Windows Development MCP ${{ steps.vars.outputs.version }}
+          draft: false
+          prerelease: ${{ steps.vars.outputs.prerelease }}
+          generate_release_notes: true
+          overwrite_files: true
+          files: |
+            dist/*.zip
+            dist/*-SHA256SUMS.txt
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
