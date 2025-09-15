@@ -38,14 +38,17 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate PRIVATE_REPO_PAT
+        env:
+          PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        shell: bash
         run: |
-          if [ -z "${{ secrets.PRIVATE_REPO_PAT }}" ]; then
+          if [ -z "$PRIVATE_REPO_PAT" ]; then
             echo "ERROR: PRIVATE_REPO_PAT secret is not set in this repository. Add it in Settings → Secrets." >&2
             exit 1
           fi
 
           # Verify the token can access the private repository via the GitHub API
-          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer ${{ secrets.PRIVATE_REPO_PAT }}" https://api.github.com/repos/DinahK-2SO/windows-development-mcp)
+          HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $PRIVATE_REPO_PAT" https://api.github.com/repos/DinahK-2SO/windows-development-mcp)
 
           if [ "$HTTP_STATUS" != "200" ]; then
             echo "ERROR: PRIVATE_REPO_PAT cannot access repository. HTTP status: $HTTP_STATUS" >&2
