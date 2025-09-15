@@ -125,15 +125,17 @@ jobs:
       - name: Prepare checksum assets
         run: |
           cd dist
-          # Copy each inner SHA256SUMS.txt to a uniquely named file at root
-          for d in */ ; do
-            name="${d%/}"
-            if [ -f "$d/SHA256SUMS.txt" ]; then
-              cp "$d/SHA256SUMS.txt" "${name}-SHA256SUMS.txt"
-            fi
+
+          # Generate SHA256 checksums for each produced ZIP (one checksum file per ZIP)
+          for z in *.zip; do
+            name="${z%.zip}"
+            # Write a file named <name>-SHA256SUMS.txt containing the hash and filename
+            sha256sum "$z" > "${name}-SHA256SUMS.txt"
           done
-          # Aggregate all into one combined file
+
+          # Combine all per-zip checksum files into a single aggregate file
           cat *-SHA256SUMS.txt > windows-development-mcp-all-SHA256SUMS.txt || true
+
           echo "Generated checksum files:"
           ls -1 *SHA256SUMS*.txt || true
 
