@@ -1,1 +1,89 @@
+# Create a workflow that checks out the private package repository, packs it, and uploads
+# the resulting .tgz to a release in THIS (public) repository. The workflow expects a
+# Personal Access Token (PAT) stored in the repository secret `PRIVATE_REPO_PAT` with
+# access to the private repo (repo scope).
+name: Release private package to Public Releases
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to create (optional). If empty, uses package.json version (prefixed with v).'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish private package as public release
+    runs-on: ubuntu-latest
+
+    env:
+      PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+
+    steps:
+    # NOTE: don't set secrets as job-level env in some linting configurations.
+    # Put the secret into the specific step's env instead to avoid "invalid context" warnings.
+
+    - name: Checkout this repository
+      uses: actions/checkout@v4
+
+    - name: Checkout private repository (via https clone)
+      run: |
+        git config --global advice.detachedHead false
+        git clone --depth=1 https://x-access-token:${{ secrets.PRIVATE_REPO_PAT }}@github.com/DinahK-2SO/windows-development-mcp.git private
+      # keep the token only in this step's runtime; do not persist it as an env var
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+
+    - name: Install dependencies (private repository)
+      working-directory: private
+      run: npm ci --prefer-offline
+
+    - name: Pack private package
+      id: pack
+      working-directory: private
+      run: |
+        # npm pack writes a tarball named like "<name-without-scope>-<version>.tgz"
+        npm pack
+        # capture the produced filename so later steps can find it
+        TARFILE=$(ls -1t *.tgz | head -n1)
+        echo "tarball=${TARFILE}" >> $GITHUB_OUTPUT
+        echo "tarball_path=private/${TARFILE}" >> $GITHUB_OUTPUT
+        echo "Produced tarball: ${TARFILE}"
+
+    - name: Determine release tag
+      id: get_tag
+      run: |
+        if [ -n "${{ github.event.inputs.tag }}" ]; then
+          echo "tag=${{ github.event.inputs.tag }}" >> $GITHUB_OUTPUT
+        else
+          VERSION=$(node -p "require('./private/package.json').version")
+          echo "tag=v${VERSION}" >> $GITHUB_OUTPUT
+        fi
+
+    - name: Create release in this repository
+      id: create_release
+      uses: actions/create-release@v1
+      with:
+        tag_name: ${{ steps.get_tag.outputs.tag }}
+        release_name: ${{ steps.get_tag.outputs.tag }}
+        body: |
+          Release of the private package from `DinahK-2SO/windows-development-mcp`.
+          Package: ${{ steps.pack.outputs.tarball }}
+        draft: false
+        prerelease: false
+
+    - name: Upload package tarball to release
+      uses: actions/upload-release-asset@v1
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: ${{ steps.pack.outputs.tarball_path }}
+        asset_name: ${{ steps.pack.outputs.tarball }}
+        asset_content_type: application/gzip
 
