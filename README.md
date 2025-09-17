@@ -4,17 +4,6 @@ This repository is a public-facing release repository for distributing the relea
 `@DinahK-2SO/windows-development-mcp` while keeping the actual code in the
 private repository `DinahK-2SO/windows-development-mcp` private.
 
-Usage
-
-- Create a Personal Access Token (PAT) with `repo` scope (or narrower read access to the private repo) in GitHub. Keep this PAT secret.
-- Add the PAT to this repository's secrets as `PRIVATE_REPO_PAT`.
-- Use the Actions workflow `Release private package to Public Releases` (Workflow `release.yml`) to create a release.
-
-Notes and security
-
-- The PAT must have at least read access to the private repository to allow Actions to checkout the private code. Do NOT grant more permissions than necessary.
-- Store the PAT in repository `Secrets` and rotate it periodically. If the PAT is compromised, revoke it immediately.
-
 Triggering a release
 
 - From the Actions tab in this repo, select the `Release private package to Public Releases` workflow and click "Run workflow".
