@@ -113,6 +113,44 @@ jobs:
         with:
           path: dist
 
+      - name: Checkout original source repository
+        env:
+          PRIVATE_REPO_PAT: ${{ secrets.PRIVATE_REPO_PAT }}
+        uses: actions/checkout@v4
+        with:
+          repository: DinahK-2SO/windows-development-mcp
+          token: ${{ env.PRIVATE_REPO_PAT }}
+          path: original-source
+          fetch-depth: 1
+
+      - name: Attach tool-scripts, prompts, and version-info to artifacts
+        run: |
+          cd dist
+
+          # For each downloaded artifact directory, copy the tool-scripts and prompts
+          # directories from the original source repository (if they exist), and create
+          # a version-info.txt file containing the release version.
+          for d in */ ; do
+            name="${d%/}"
+
+            # Ensure destination directories exist
+            mkdir -p "${name}/tool-scripts" || true
+            mkdir -p "${name}/prompts" || true
+
+            # Copy tool-scripts and prompts from original-source if present
+            if [ -d "../original-source/tool-scripts" ]; then
+              cp -a ../original-source/tool-scripts/. "${name}/tool-scripts/" || true
+            fi
+            if [ -d "../original-source/prompts" ]; then
+              cp -a ../original-source/prompts/. "${name}/prompts/" || true
+            fi
+
+            # Write version-info.txt with the determined release version
+            echo "${{ steps.vars.outputs.version }}" > "${name}/version-info.txt"
+          done
+
+          ls -R
+
       - name: Package archives
         run: |
           cd dist
